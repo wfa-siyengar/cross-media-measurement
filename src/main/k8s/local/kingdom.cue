@@ -17,11 +17,7 @@ package k8s
 _secret_name: string @tag("secret_name")
 
 #DataServerResourceRequirements: #ResourceRequirements & {
-	requests: cpu: "50m"
-	limits: {
-		cpu:    "200m"
-		memory: "384Mi"
-	}
+	limits: memory: "1524Mi"
 }
 
 objectSets: [ for objectSet in kingdom {objectSet}]
