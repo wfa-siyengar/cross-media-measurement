@@ -15,6 +15,9 @@
 package org.wfanet.measurement.reporting.service.api.v2alpha
 
 import com.google.protobuf.ByteString
+import com.google.protobuf.Duration
+import com.google.protobuf.duration
+import com.google.protobuf.util.Durations
 import io.grpc.Status
 import io.grpc.StatusException
 import java.io.File
@@ -23,12 +26,14 @@ import java.security.SecureRandom
 import java.security.SignatureException
 import java.security.cert.CertPathValidatorException
 import java.security.cert.X509Certificate
+import kotlin.math.min
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.toList
 import org.wfanet.measurement.api.v2.alpha.ListMetricsPageToken
+import org.wfanet.measurement.api.v2.alpha.ListMetricsPageTokenKt.previousPageEnd
 import org.wfanet.measurement.api.v2.alpha.copy
 import org.wfanet.measurement.api.v2.alpha.listMetricsPageToken
 import org.wfanet.measurement.api.v2alpha.Certificate
@@ -57,12 +62,15 @@ import org.wfanet.measurement.api.v2alpha.differentialPrivacyParams
 import org.wfanet.measurement.api.v2alpha.getCertificateRequest
 import org.wfanet.measurement.api.v2alpha.getDataProviderRequest
 import org.wfanet.measurement.api.v2alpha.getMeasurementConsumerRequest
+import org.wfanet.measurement.api.v2alpha.getMeasurementRequest
 import org.wfanet.measurement.api.v2alpha.measurement
 import org.wfanet.measurement.api.v2alpha.measurementSpec
 import org.wfanet.measurement.api.v2alpha.requisitionSpec
 import org.wfanet.measurement.api.v2alpha.timeInterval as cmmsTimeInterval
 import org.wfanet.measurement.api.withAuthenticationKey
 import org.wfanet.measurement.common.base64UrlDecode
+import org.wfanet.measurement.common.base64UrlEncode
+import org.wfanet.measurement.common.crypto.PrivateKeyHandle
 import org.wfanet.measurement.common.crypto.SigningKeyHandle
 import org.wfanet.measurement.common.crypto.authorityKeyIdentifier
 import org.wfanet.measurement.common.crypto.hashSha256
@@ -74,13 +82,16 @@ import org.wfanet.measurement.common.grpc.grpcRequireNotNull
 import org.wfanet.measurement.common.identity.apiIdToExternalId
 import org.wfanet.measurement.common.identity.externalIdToApiId
 import org.wfanet.measurement.common.readByteString
+import org.wfanet.measurement.consent.client.measurementconsumer.decryptResult
 import org.wfanet.measurement.consent.client.measurementconsumer.encryptRequisitionSpec
 import org.wfanet.measurement.consent.client.measurementconsumer.signMeasurementSpec
 import org.wfanet.measurement.consent.client.measurementconsumer.signRequisitionSpec
 import org.wfanet.measurement.consent.client.measurementconsumer.verifyEncryptionPublicKey
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequest.MeasurementIds
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequestKt.measurementIds
+import org.wfanet.measurement.consent.client.measurementconsumer.verifyResult
 import org.wfanet.measurement.internal.reporting.v2alpha.Measurement as InternalMeasurement
+import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementKt as InternalMeasurementKt
 import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementsGrpcKt.MeasurementsCoroutineStub as InternalMeasurementsCoroutineStub
 import org.wfanet.measurement.internal.reporting.v2alpha.Metric as InternalMetric
 import org.wfanet.measurement.internal.reporting.v2alpha.Metric.WeightedMeasurement
@@ -92,19 +103,28 @@ import org.wfanet.measurement.internal.reporting.v2alpha.MetricSpecKt as Interna
 import org.wfanet.measurement.internal.reporting.v2alpha.MetricsGrpcKt.MetricsCoroutineStub as InternalMetricsCoroutineStub
 import org.wfanet.measurement.internal.reporting.v2alpha.ReportingSet as InternalReportingSet
 import org.wfanet.measurement.internal.reporting.v2alpha.ReportingSetsGrpcKt.ReportingSetsCoroutineStub as InternalReportingSetsCoroutineStub
+import org.wfanet.measurement.internal.reporting.v2alpha.SetMeasurementResultRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.StreamMetricsRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.StreamMetricsRequestKt
 import org.wfanet.measurement.internal.reporting.v2alpha.TimeInterval as InternalTimeInterval
 import org.wfanet.measurement.internal.reporting.v2alpha.batchCreateMetricsRequest as internalBatchCreateMetricsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchGetReportingSetsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchSetCmmsMeasurementIdsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.copy
+import org.wfanet.measurement.internal.reporting.v2alpha.getMetricByIdempotencyKeyRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.getMetricRequest as internalGetMetricRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.getReportingSetRequest as getInternalReportingSetRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.measurement as internalMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.metric as internalMetric
 import org.wfanet.measurement.internal.reporting.v2alpha.metricSpec as internalMetricSpec
+import org.wfanet.measurement.internal.reporting.v2alpha.setMeasurementFailureRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.setMeasurementResultRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.streamMetricsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.timeInterval as internalTimeInterval
 import org.wfanet.measurement.reporting.service.api.EncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.BatchCreateMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.BatchCreateMetricsResponse
+import org.wfanet.measurement.reporting.service.api.v1alpha.EncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.CreateMetricRequest
 import org.wfanet.measurement.reporting.v2alpha.ListMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.ListMetricsResponse
@@ -119,10 +139,12 @@ import org.wfanet.measurement.reporting.v2alpha.MetricSpecKt
 import org.wfanet.measurement.reporting.v2alpha.MetricsGrpcKt.MetricsCoroutineImplBase
 import org.wfanet.measurement.reporting.v2alpha.TimeInterval
 import org.wfanet.measurement.reporting.v2alpha.batchCreateMetricsResponse
+import org.wfanet.measurement.reporting.v2alpha.listMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.metric
 import org.wfanet.measurement.reporting.v2alpha.metricResult
 import org.wfanet.measurement.reporting.v2alpha.metricSpec
 import org.wfanet.measurement.reporting.v2alpha.timeInterval
+import sun.jvm.hotspot.oops.CellTypeState.value
 
 private const val MAX_BATCH_SIZE = 1000
 private const val MIN_PAGE_SIZE = 1
@@ -185,10 +207,11 @@ private val REACH_ONLY_MEASUREMENT_SPEC =
   }
 
 class MetricsService(
+  private val internalMetricsStub: InternalMetricsCoroutineStub,
   private val internalReportingSetsStub: InternalReportingSetsCoroutineStub,
   private val internalMeasurementsStub: InternalMeasurementsCoroutineStub,
-  private val internalMetricsStub: InternalMetricsCoroutineStub,
   private val dataProvidersStub: DataProvidersCoroutineStub,
+  private val measurementConsumersStub: MeasurementConsumersCoroutineStub,
   private val measurementsStub: MeasurementsCoroutineStub,
   private val certificatesStub: CertificatesCoroutineStub,
   private val measurementConsumersStub: MeasurementConsumersCoroutineStub,
@@ -638,7 +661,318 @@ class MetricsService(
   override suspend fun listMetrics(request: ListMetricsRequest): ListMetricsResponse {
     val listMetricsPageToken: ListMetricsPageToken = request.toListMetricsPageToken()
 
-    return super.listMetrics(request)
+    val principal: ReportingPrincipal = principalFromCurrentContext
+    when (principal) {
+      is MeasurementConsumerPrincipal -> {
+        if (request.parent != principal.resourceKey.toName()) {
+          failGrpc(Status.PERMISSION_DENIED) {
+            "Cannot create a Metric for another MeasurementConsumer."
+          }
+        }
+      }
+    }
+    val principalName = principal.resourceKey.toName()
+    val apiAuthenticationKey: String = principal.config.apiKey
+
+    val streamInternalMetricRequest: StreamMetricsRequest =
+      listMetricsPageToken.toStreamMetricsRequest()
+
+    val results: List<InternalMetric> =
+      try {
+        internalMetricsStub.streamMetrics(streamInternalMetricRequest).toList()
+      } catch (e: StatusException) {
+        throw Exception("Unable to list metrics from the reporting database.", e)
+      }
+
+    if (results.isEmpty()) {
+      return ListMetricsResponse.getDefaultInstance()
+    }
+
+    val nextPageToken: ListMetricsPageToken? =
+      if (results.size > listMetricsPageToken.pageSize) {
+        listMetricsPageToken.copy {
+          lastMetric = previousPageEnd {
+            externalMeasurementConsumerId =
+              results[results.lastIndex - 1].measurementConsumerReferenceId
+            externalMetricId = results[results.lastIndex - 1].externalMetricId
+          }
+        }
+      } else null
+
+    return listMetricsResponse {
+      metrics +=
+        results
+          .subList(0, min(results.size, listMetricsPageToken.pageSize))
+          .map { syncMetric(it, apiAuthenticationKey, principalName) }
+          .map(InternalMetric::toMetric)
+
+      if (nextPageToken != null) {
+        this.nextPageToken = nextPageToken.toByteString().base64UrlEncode()
+      }
+    }
+  }
+
+  /** Syncs the [InternalMetric] and all [InternalMeasurement]s used by it. */
+  private suspend fun syncMetric(
+    internalMetric: InternalMetric,
+    apiAuthenticationKey: String,
+    principalName: String
+  ): InternalMetric {
+    // Metric with SUCCEEDED or FAILED state is already synced.
+    if (
+      internalMetric.state == InternalMetric.State.SUCCEEDED ||
+        internalMetric.state == InternalMetric.State.FAILED
+    ) {
+      return internalMetric
+    } else if (
+      internalMetric.state == InternalMetric.State.STATE_UNSPECIFIED ||
+        internalMetric.state == InternalMetric.State.UNRECOGNIZED
+    ) {
+      error(
+        "The metric cannot be synced because the metric state was not set correctly as it " +
+          "should've been."
+      )
+    }
+
+    syncMeasurements(
+      internalMetric.weightedMeasurementsList,
+      internalMetric.measurementConsumerReferenceId,
+      apiAuthenticationKey,
+      principalName,
+    )
+
+    return try {
+      internalMetricsStub.getMetric(
+        internalGetMetricRequest {
+          measurementConsumerReferenceId = internalMetric.measurementConsumerReferenceId
+          externalMetricId = internalMetric.externalMetricId
+        }
+      )
+    } catch (e: StatusException) {
+      val metricName =
+        MetricKey(
+            internalMetric.measurementConsumerReferenceId,
+            externalIdToApiId(internalMetric.externalMetricId)
+          )
+          .toName()
+      throw Exception("Unable to get the metric [$metricName] from the reporting database.", e)
+    }
+  }
+
+  /** Syncs [InternalMeasurement]s. */
+  private suspend fun syncMeasurements(
+    weightedMeasurements: List<WeightedMeasurement>,
+    measurementConsumerReferenceId: String,
+    apiAuthenticationKey: String,
+    principalName: String,
+  ) {
+    for (weightedMeasurement in weightedMeasurements) {
+      // Measurement with SUCCEEDED state is already synced
+      if (weightedMeasurement.measurement.state == InternalMeasurement.State.SUCCEEDED) continue
+
+      syncMeasurement(
+        weightedMeasurement.measurement,
+        measurementConsumerReferenceId,
+        apiAuthenticationKey,
+        principalName,
+      )
+    }
+  }
+
+  /** Syncs [InternalMeasurement] with the CMMs [Measurement] given the measurement reference ID. */
+  private suspend fun syncMeasurement(
+    internalMeasurement: InternalMeasurement,
+    measurementConsumerReferenceId: String,
+    apiAuthenticationKey: String,
+    principalName: String,
+  ) {
+    val measurementResourceName =
+      MeasurementKey(measurementConsumerReferenceId, internalMeasurement.measurementReferenceId)
+        .toName()
+    val measurement =
+      try {
+        measurementsStub
+          .withAuthenticationKey(apiAuthenticationKey)
+          .getMeasurement(getMeasurementRequest { name = measurementResourceName })
+      } catch (e: StatusException) {
+        throw Exception("Unable to retrieve the measurement [$measurementResourceName].", e)
+      }
+
+    @Suppress("WHEN_ENUM_CAN_BE_NULL_IN_JAVA") // Proto enum fields are never null.
+    when (measurement.state) {
+      Measurement.State.SUCCEEDED -> {
+        // Store the result to the internal database.
+        val measurementSpec = MeasurementSpec.parseFrom(measurement.measurementSpec.data)
+        val encryptionPrivateKeyHandle =
+          encryptionKeyPairStore.getPrivateKeyHandle(
+            principalName,
+            EncryptionPublicKey.parseFrom(measurementSpec.measurementPublicKey).data
+          )
+            ?: failGrpc(Status.PERMISSION_DENIED) { "Encryption private key not found" }
+
+        val setInternalMeasurementResultRequest: SetMeasurementResultRequest =
+          buildSetInternalMeasurementResultRequest(
+            measurementConsumerReferenceId,
+            internalMeasurement.externalMeasurementId,
+            measurement.resultsList,
+            encryptionPrivateKeyHandle,
+            apiAuthenticationKey,
+          )
+
+        try {
+          internalMeasurementsStub.setMeasurementResult(setInternalMeasurementResultRequest)
+        } catch (e: StatusException) {
+          throw Exception(
+            "Unable to update the measurement [$measurementResourceName] in the reporting " +
+              "database.",
+            e
+          )
+        }
+      }
+      Measurement.State.AWAITING_REQUISITION_FULFILLMENT,
+      Measurement.State.COMPUTING -> {} // No action needed
+      Measurement.State.FAILED,
+      Measurement.State.CANCELLED -> {
+        val setInternalMeasurementFailureRequest = setMeasurementFailureRequest {
+          this.measurementConsumerReferenceId = measurementConsumerReferenceId
+          this.externalMeasurementId = externalMeasurementId
+          failure = measurement.failure.toInternal()
+        }
+
+        try {
+          internalMeasurementsStub.setMeasurementFailure(setInternalMeasurementFailureRequest)
+        } catch (e: StatusException) {
+          throw Exception(
+            "Unable to update the measurement [$measurementResourceName] in the reporting " +
+              "database.",
+            e
+          )
+        }
+      }
+      Measurement.State.STATE_UNSPECIFIED -> error("The measurement state should've been set.")
+      Measurement.State.UNRECOGNIZED -> error("Unrecognized measurement state.")
+    }
+  }
+
+  /** Builds a [SetMeasurementResultRequest]. */
+  private suspend fun buildSetInternalMeasurementResultRequest(
+    measurementConsumerReferenceId: String,
+    externalMeasurementId: Long,
+    resultsList: List<Measurement.ResultPair>,
+    encryptionPrivateKeyHandle: PrivateKeyHandle,
+    apiAuthenticationKey: String,
+  ): SetMeasurementResultRequest {
+    return setMeasurementResultRequest {
+      this.measurementConsumerReferenceId = measurementConsumerReferenceId
+      this.externalMeasurementId = externalMeasurementId
+      result =
+        aggregateResults(
+          resultsList
+            .map {
+              decryptMeasurementResultPair(it, encryptionPrivateKeyHandle, apiAuthenticationKey)
+            }
+            .map(Measurement.Result::toInternal)
+        )
+    }
+  }
+
+  /** Decrypts a [Measurement.ResultPair] to [Measurement.Result] */
+  private suspend fun decryptMeasurementResultPair(
+    measurementResultPair: Measurement.ResultPair,
+    encryptionPrivateKeyHandle: PrivateKeyHandle,
+    apiAuthenticationKey: String,
+  ): Measurement.Result {
+    // TODO: Cache the certificate
+    val certificate =
+      try {
+        certificateStub
+          .withAuthenticationKey(apiAuthenticationKey)
+          .getCertificate(getCertificateRequest { name = measurementResultPair.certificate })
+      } catch (e: StatusException) {
+        throw Exception(
+          "Unable to retrieve the certificate [${measurementResultPair.certificate}].",
+          e
+        )
+      }
+
+    val signedResult =
+      decryptResult(measurementResultPair.encryptedResult, encryptionPrivateKeyHandle)
+
+    val x509Certificate: X509Certificate = readCertificate(certificate.x509Der)
+    val trustedIssuer: X509Certificate =
+      checkNotNull(trustedCertificates[checkNotNull(x509Certificate.authorityKeyIdentifier)]) {
+        "${certificate.name} not issued by trusted CA"
+      }
+
+    // TODO: Record verification failure in internal Measurement rather than having the RPC fail.
+    try {
+      verifyResult(signedResult, x509Certificate, trustedIssuer)
+    } catch (e: CertPathValidatorException) {
+      throw Exception("Certificate path for ${certificate.name} is invalid", e)
+    } catch (e: SignatureException) {
+      throw Exception("Measurement result signature is invalid", e)
+    }
+    return Measurement.Result.parseFrom(signedResult.data)
+  }
+
+  /** Aggregate a list of [InternalMeasurement.Result]s to a [InternalMeasurement.Result] */
+  private fun aggregateResults(
+    internalMeasurementResults: List<InternalMeasurement.Result>
+  ): InternalMeasurement.Result {
+    if (internalMeasurementResults.isEmpty()) {
+      error("No measurement result.")
+    }
+    var reachValue = 0L
+    var impressionValue = 0L
+    val frequencyDistribution = mutableMapOf<Long, Double>()
+    var watchDurationValue = duration {
+      seconds = 0
+      nanos = 0
+    }
+
+    // Aggregation
+    for (result in internalMeasurementResults) {
+      if (result.hasFrequency()) {
+        if (!result.hasReach()) {
+          error("Missing reach measurement in the Reach-Frequency measurement.")
+        }
+        for ((frequency, percentage) in result.frequency.relativeFrequencyDistributionMap) {
+          val previousTotalReachCount =
+            frequencyDistribution.getOrDefault(frequency, 0.0) * reachValue
+          val currentReachCount = percentage * result.reach.value
+          frequencyDistribution[frequency] =
+            (previousTotalReachCount + currentReachCount) / (reachValue + result.reach.value)
+        }
+      }
+      if (result.hasReach()) {
+        reachValue += result.reach.value
+      }
+      if (result.hasImpression()) {
+        impressionValue += result.impression.value
+      }
+      if (result.hasWatchDuration()) {
+        watchDurationValue += result.watchDuration.value
+      }
+    }
+
+    return InternalMeasurementKt.result {
+      if (internalMeasurementResults.first().hasReach()) {
+        this.reach = InternalMeasurementKt.ResultKt.reach { value = reachValue }
+      }
+      if (internalMeasurementResults.first().hasFrequency()) {
+        this.frequency =
+          InternalMeasurementKt.ResultKt.frequency {
+            relativeFrequencyDistribution.putAll(frequencyDistribution)
+          }
+      }
+      if (internalMeasurementResults.first().hasImpression()) {
+        this.impression = InternalMeasurementKt.ResultKt.impression { value = impressionValue }
+      }
+      if (internalMeasurementResults.first().hasWatchDuration()) {
+        this.watchDuration =
+          InternalMeasurementKt.ResultKt.watchDuration { value = watchDurationValue }
+      }
+    }
   }
 
   override suspend fun createMetric(request: CreateMetricRequest): Metric {
@@ -823,6 +1157,71 @@ class MetricsService(
         e
       )
     }
+  }
+}
+
+/** Converts a CMM [Measurement.Failure] to an [InternalMeasurement.Failure]. */
+private fun Measurement.Failure.toInternal(): InternalMeasurement.Failure {
+  val source = this
+
+  return InternalMeasurementKt.failure {
+    @Suppress("WHEN_ENUM_CAN_BE_NULL_IN_JAVA") // Proto enum fields are never null.
+    reason =
+      when (source.reason) {
+        Measurement.Failure.Reason.REASON_UNSPECIFIED ->
+          InternalMeasurement.Failure.Reason.REASON_UNSPECIFIED
+        Measurement.Failure.Reason.CERTIFICATE_REVOKED ->
+          InternalMeasurement.Failure.Reason.CERTIFICATE_REVOKED
+        Measurement.Failure.Reason.REQUISITION_REFUSED ->
+          InternalMeasurement.Failure.Reason.REQUISITION_REFUSED
+        Measurement.Failure.Reason.COMPUTATION_PARTICIPANT_FAILED ->
+          InternalMeasurement.Failure.Reason.COMPUTATION_PARTICIPANT_FAILED
+        Measurement.Failure.Reason.UNRECOGNIZED -> InternalMeasurement.Failure.Reason.UNRECOGNIZED
+      }
+    message = source.message
+  }
+}
+
+private operator fun Duration.plus(other: Duration): Duration {
+  return Durations.add(this, other)
+}
+
+/** Converts a CMM [Measurement.Result] to an [InternalMeasurement.Result]. */
+private fun Measurement.Result.toInternal(): InternalMeasurement.Result {
+  val source = this
+
+  return InternalMeasurementKt.result {
+    if (source.hasReach()) {
+      this.reach = InternalMeasurementKt.ResultKt.reach { value = source.reach.value }
+    }
+    if (source.hasFrequency()) {
+      this.frequency =
+        InternalMeasurementKt.ResultKt.frequency {
+          relativeFrequencyDistribution.putAll(source.frequency.relativeFrequencyDistributionMap)
+        }
+    }
+    if (source.hasImpression()) {
+      this.impression =
+        InternalMeasurementKt.ResultKt.impression { value = source.impression.value }
+    }
+    if (source.hasWatchDuration()) {
+      this.watchDuration =
+        InternalMeasurementKt.ResultKt.watchDuration { value = source.watchDuration.value }
+    }
+  }
+}
+
+/** Converts a [ListMetricsPageToken] to an internal [StreamMetricsRequest]. */
+private fun ListMetricsPageToken.toStreamMetricsRequest(): StreamMetricsRequest {
+  val source = this
+  return streamMetricsRequest {
+    // get 1 more than the actual page size for deciding whether to set page token
+    limit = pageSize + 1
+    filter =
+      StreamMetricsRequestKt.filter {
+        measurementConsumerReferenceId = source.externalMeasurementConsumerId
+        externalMetricIdAfter = source.lastMetric.externalMetricId
+      }
   }
 }
 
