@@ -144,7 +144,6 @@ import org.wfanet.measurement.reporting.v2alpha.metric
 import org.wfanet.measurement.reporting.v2alpha.metricResult
 import org.wfanet.measurement.reporting.v2alpha.metricSpec
 import org.wfanet.measurement.reporting.v2alpha.timeInterval
-import sun.jvm.hotspot.oops.CellTypeState.value
 
 private const val MAX_BATCH_SIZE = 1000
 private const val MIN_PAGE_SIZE = 1
@@ -703,7 +702,7 @@ class MetricsService(
       metrics +=
         results
           .subList(0, min(results.size, listMetricsPageToken.pageSize))
-          .map { syncMetric(it, apiAuthenticationKey, principalName) }
+          .map { getUpToDateMetric(it, apiAuthenticationKey, principalName) }
           .map(InternalMetric::toMetric)
 
       if (nextPageToken != null) {
@@ -712,8 +711,8 @@ class MetricsService(
     }
   }
 
-  /** Syncs the [InternalMetric] and all [InternalMeasurement]s used by it. */
-  private suspend fun syncMetric(
+  /** Gets the up to date [InternalMetric]. */
+  private suspend fun getUpToDateMetric(
     internalMetric: InternalMetric,
     apiAuthenticationKey: String,
     principalName: String
