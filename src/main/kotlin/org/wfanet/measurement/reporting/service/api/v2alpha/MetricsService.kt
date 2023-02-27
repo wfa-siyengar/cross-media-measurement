@@ -28,6 +28,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.toList
+import org.wfanet.measurement.api.v2.alpha.ListMetricsPageToken
+import org.wfanet.measurement.api.v2.alpha.copy
+import org.wfanet.measurement.api.v2.alpha.listMetricsPageToken
 import org.wfanet.measurement.api.v2alpha.Certificate
 import org.wfanet.measurement.api.v2alpha.CertificatesGrpcKt.CertificatesCoroutineStub
 import org.wfanet.measurement.api.v2alpha.CreateMeasurementRequest
@@ -59,6 +62,7 @@ import org.wfanet.measurement.api.v2alpha.measurementSpec
 import org.wfanet.measurement.api.v2alpha.requisitionSpec
 import org.wfanet.measurement.api.v2alpha.timeInterval as cmmsTimeInterval
 import org.wfanet.measurement.api.withAuthenticationKey
+import org.wfanet.measurement.common.base64UrlDecode
 import org.wfanet.measurement.common.crypto.SigningKeyHandle
 import org.wfanet.measurement.common.crypto.authorityKeyIdentifier
 import org.wfanet.measurement.common.crypto.hashSha256
@@ -102,6 +106,8 @@ import org.wfanet.measurement.reporting.service.api.EncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.BatchCreateMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.BatchCreateMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.CreateMetricRequest
+import org.wfanet.measurement.reporting.v2alpha.ListMetricsRequest
+import org.wfanet.measurement.reporting.v2alpha.ListMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.Metric
 import org.wfanet.measurement.reporting.v2alpha.MetricResult as MetricResult
 import org.wfanet.measurement.reporting.v2alpha.MetricResultKt.HistogramResultKt.bin
@@ -629,6 +635,12 @@ class MetricsService(
     }
   }
 
+  override suspend fun listMetrics(request: ListMetricsRequest): ListMetricsResponse {
+    val listMetricsPageToken: ListMetricsPageToken = request.toListMetricsPageToken()
+
+    return super.listMetrics(request)
+  }
+
   override suspend fun createMetric(request: CreateMetricRequest): Metric {
     grpcRequireNotNull(MeasurementConsumerKey.fromName(request.parent)) {
       "Parent is either unspecified or invalid."
@@ -810,6 +822,44 @@ class MetricsService(
           "reportingSet [$reportingSetName].",
         e
       )
+    }
+  }
+}
+
+/** Converts a public [ListMetricsRequest] to a [ListMetricsPageToken]. */
+private fun ListMetricsRequest.toListMetricsPageToken(): ListMetricsPageToken {
+  val source = this
+
+  grpcRequire(source.pageSize >= 0) { "Page size cannot be less than 0" }
+
+  val parentKey: MeasurementConsumerKey =
+    grpcRequireNotNull(MeasurementConsumerKey.fromName(source.parent)) {
+      "Parent is either unspecified or invalid."
+    }
+  val cmmsMeasurementConsumerId = parentKey.measurementConsumerId
+
+  val isValidPageSize =
+    source.pageSize != 0 && source.pageSize >= MIN_PAGE_SIZE && source.pageSize <= MAX_PAGE_SIZE
+
+  return if (pageToken.isNotBlank()) {
+    ListMetricsPageToken.parseFrom(source.pageToken.base64UrlDecode()).copy {
+      grpcRequire(this.externalMeasurementConsumerId == cmmsMeasurementConsumerId) {
+        "Arguments must be kept the same when using a page token"
+      }
+
+      if (isValidPageSize) {
+        pageSize = source.pageSize
+      }
+    }
+  } else {
+    listMetricsPageToken {
+      pageSize =
+        when {
+          source.pageSize < MIN_PAGE_SIZE -> DEFAULT_PAGE_SIZE
+          source.pageSize > MAX_PAGE_SIZE -> MAX_PAGE_SIZE
+          else -> source.pageSize
+        }
+      this.externalMeasurementConsumerId = cmmsMeasurementConsumerId
     }
   }
 }
