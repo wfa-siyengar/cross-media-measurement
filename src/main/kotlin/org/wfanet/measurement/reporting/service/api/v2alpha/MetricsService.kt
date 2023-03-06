@@ -124,7 +124,6 @@ import org.wfanet.measurement.internal.reporting.v2alpha.timeInterval as interna
 import org.wfanet.measurement.reporting.service.api.EncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.BatchCreateMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.BatchCreateMetricsResponse
-import org.wfanet.measurement.reporting.service.api.v1alpha.EncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.CreateMetricRequest
 import org.wfanet.measurement.reporting.v2alpha.ListMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.ListMetricsResponse
@@ -206,11 +205,10 @@ private val REACH_ONLY_MEASUREMENT_SPEC =
   }
 
 class MetricsService(
-  private val internalMetricsStub: InternalMetricsCoroutineStub,
   private val internalReportingSetsStub: InternalReportingSetsCoroutineStub,
   private val internalMeasurementsStub: InternalMeasurementsCoroutineStub,
+  private val internalMetricsStub: InternalMetricsCoroutineStub,
   private val dataProvidersStub: DataProvidersCoroutineStub,
-  private val measurementConsumersStub: MeasurementConsumersCoroutineStub,
   private val measurementsStub: MeasurementsCoroutineStub,
   private val certificatesStub: CertificatesCoroutineStub,
   private val measurementConsumersStub: MeasurementConsumersCoroutineStub,
@@ -692,7 +690,7 @@ class MetricsService(
         listMetricsPageToken.copy {
           lastMetric = previousPageEnd {
             externalMeasurementConsumerId =
-              results[results.lastIndex - 1].measurementConsumerReferenceId
+              results[results.lastIndex - 1].cmmsMeasurementConsumerId
             externalMetricId = results[results.lastIndex - 1].externalMetricId
           }
         }
@@ -735,7 +733,7 @@ class MetricsService(
 
     syncMeasurements(
       internalMetric.weightedMeasurementsList,
-      internalMetric.measurementConsumerReferenceId,
+      internalMetric.cmmsMeasurementConsumerId,
       apiAuthenticationKey,
       principalName,
     )
@@ -743,14 +741,14 @@ class MetricsService(
     return try {
       internalMetricsStub.getMetric(
         internalGetMetricRequest {
-          measurementConsumerReferenceId = internalMetric.measurementConsumerReferenceId
+          cmmsMeasurementConsumerId = internalMetric.cmmsMeasurementConsumerId
           externalMetricId = internalMetric.externalMetricId
         }
       )
     } catch (e: StatusException) {
       val metricName =
         MetricKey(
-            internalMetric.measurementConsumerReferenceId,
+            internalMetric.cmmsMeasurementConsumerId,
             externalIdToApiId(internalMetric.externalMetricId)
           )
           .toName()
@@ -761,7 +759,7 @@ class MetricsService(
   /** Syncs [InternalMeasurement]s. */
   private suspend fun syncMeasurements(
     weightedMeasurements: List<WeightedMeasurement>,
-    measurementConsumerReferenceId: String,
+    cmmsMeasurementConsumerId: String,
     apiAuthenticationKey: String,
     principalName: String,
   ) {
@@ -771,7 +769,7 @@ class MetricsService(
 
       syncMeasurement(
         weightedMeasurement.measurement,
-        measurementConsumerReferenceId,
+        cmmsMeasurementConsumerId,
         apiAuthenticationKey,
         principalName,
       )
@@ -781,12 +779,12 @@ class MetricsService(
   /** Syncs [InternalMeasurement] with the CMMs [Measurement] given the measurement reference ID. */
   private suspend fun syncMeasurement(
     internalMeasurement: InternalMeasurement,
-    measurementConsumerReferenceId: String,
+    cmmsMeasurementConsumerId: String,
     apiAuthenticationKey: String,
     principalName: String,
   ) {
     val measurementResourceName =
-      MeasurementKey(measurementConsumerReferenceId, internalMeasurement.measurementReferenceId)
+      MeasurementKey(cmmsMeasurementConsumerId, internalMeasurement.cmmsMeasurementId)
         .toName()
     val measurement =
       try {
@@ -811,7 +809,7 @@ class MetricsService(
 
         val setInternalMeasurementResultRequest: SetMeasurementResultRequest =
           buildSetInternalMeasurementResultRequest(
-            measurementConsumerReferenceId,
+            cmmsMeasurementConsumerId,
             internalMeasurement.externalMeasurementId,
             measurement.resultsList,
             encryptionPrivateKeyHandle,
@@ -833,7 +831,7 @@ class MetricsService(
       Measurement.State.FAILED,
       Measurement.State.CANCELLED -> {
         val setInternalMeasurementFailureRequest = setMeasurementFailureRequest {
-          this.measurementConsumerReferenceId = measurementConsumerReferenceId
+          this.cmmsMeasurementConsumerId = cmmsMeasurementConsumerId
           this.externalMeasurementId = externalMeasurementId
           failure = measurement.failure.toInternal()
         }
@@ -855,14 +853,14 @@ class MetricsService(
 
   /** Builds a [SetMeasurementResultRequest]. */
   private suspend fun buildSetInternalMeasurementResultRequest(
-    measurementConsumerReferenceId: String,
+    cmmsMeasurementConsumerId: String,
     externalMeasurementId: Long,
     resultsList: List<Measurement.ResultPair>,
     encryptionPrivateKeyHandle: PrivateKeyHandle,
     apiAuthenticationKey: String,
   ): SetMeasurementResultRequest {
     return setMeasurementResultRequest {
-      this.measurementConsumerReferenceId = measurementConsumerReferenceId
+      this.cmmsMeasurementConsumerId = cmmsMeasurementConsumerId
       this.externalMeasurementId = externalMeasurementId
       result =
         aggregateResults(
@@ -884,7 +882,7 @@ class MetricsService(
     // TODO: Cache the certificate
     val certificate =
       try {
-        certificateStub
+        certificatesStub
           .withAuthenticationKey(apiAuthenticationKey)
           .getCertificate(getCertificateRequest { name = measurementResultPair.certificate })
       } catch (e: StatusException) {
@@ -1218,7 +1216,7 @@ private fun ListMetricsPageToken.toStreamMetricsRequest(): StreamMetricsRequest 
     limit = pageSize + 1
     filter =
       StreamMetricsRequestKt.filter {
-        measurementConsumerReferenceId = source.externalMeasurementConsumerId
+        cmmsMeasurementConsumerId = source.externalMeasurementConsumerId
         externalMetricIdAfter = source.lastMetric.externalMetricId
       }
   }
