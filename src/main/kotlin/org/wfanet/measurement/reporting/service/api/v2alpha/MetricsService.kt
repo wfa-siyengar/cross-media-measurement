@@ -121,7 +121,6 @@ import org.wfanet.measurement.internal.reporting.v2alpha.getReportingSetRequest 
 import org.wfanet.measurement.internal.reporting.v2alpha.measurement as internalMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.metric as internalMetric
 import org.wfanet.measurement.internal.reporting.v2alpha.metricSpec as internalMetricSpec
-import org.wfanet.measurement.internal.reporting.v2alpha.setMeasurementFailureRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.streamMetricsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.timeInterval as internalTimeInterval
 import org.wfanet.measurement.reporting.service.api.EncryptionKeyPairStore
@@ -987,7 +986,7 @@ class MetricsService(
         }
       } else null
 
-    val toBeSyncedMeasurements: List<InternalMeasurement> =
+    val toBeSyncedInternalMeasurements: List<InternalMeasurement> =
       results
         .subList(0, min(results.size, listMetricsPageToken.pageSize))
         .filter { internalMetric -> internalMetric.state == InternalMetric.State.RUNNING }
@@ -995,7 +994,7 @@ class MetricsService(
         .map { weightedMeasurement -> weightedMeasurement.measurement }
 
     measurementSupplier.syncInternalMeasurements(
-      toBeSyncedMeasurements,
+      toBeSyncedInternalMeasurements,
       apiAuthenticationKey,
       principal,
     )
