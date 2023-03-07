@@ -117,6 +117,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.GetMetricByIdempotencyK
 import org.wfanet.measurement.internal.reporting.v2alpha.GetReportingSetRequest as InternalGetReportingSetRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.Measurement as InternalMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementKt as InternalMeasurementKt
+import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementKt.failure as internalFailure
 import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementsGrpcKt as InternalMeasurementsGrpcKt
 import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementsGrpcKt.MeasurementsCoroutineImplBase as InternalMeasurementsCoroutineImplBase
 import org.wfanet.measurement.internal.reporting.v2alpha.Metric as InternalMetric
@@ -136,6 +137,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.ReportingSetKt.primitiv
 import org.wfanet.measurement.internal.reporting.v2alpha.ReportingSetKt.setExpression as internalSetExpression
 import org.wfanet.measurement.internal.reporting.v2alpha.ReportingSetKt.weightedSubsetUnion
 import org.wfanet.measurement.internal.reporting.v2alpha.ReportingSetsGrpcKt as InternalReportingSetsGrpcKt
+import org.wfanet.measurement.internal.reporting.v2alpha.StreamMetricsRequestKt.filter
 import org.wfanet.measurement.internal.reporting.v2alpha.batchCreateMetricsRequest as internalBatchCreateMetricsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchGetReportingSetsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchSetCmmsMeasurementIdsRequest
@@ -146,6 +148,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.metric as internalMetri
 import org.wfanet.measurement.internal.reporting.v2alpha.metricResult as internalMetricResult
 import org.wfanet.measurement.internal.reporting.v2alpha.metricSpec as internalMetricSpec
 import org.wfanet.measurement.internal.reporting.v2alpha.reportingSet as internalReportingSet
+import org.wfanet.measurement.internal.reporting.v2alpha.streamMetricsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.timeInterval as internalTimeInterval
 import org.wfanet.measurement.reporting.service.api.InMemoryEncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.Metric
@@ -159,6 +162,8 @@ import org.wfanet.measurement.reporting.v2alpha.batchCreateMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.batchCreateMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.copy
 import org.wfanet.measurement.reporting.v2alpha.createMetricRequest
+import org.wfanet.measurement.reporting.v2alpha.listMetricsRequest
+import org.wfanet.measurement.reporting.v2alpha.listMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.metric
 import org.wfanet.measurement.reporting.v2alpha.metricResult
 import org.wfanet.measurement.reporting.v2alpha.metricSpec
@@ -655,6 +660,25 @@ private val INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
     cmmsMeasurementId = externalIdToApiId(403L)
   }
 
+private val INTERNAL_SUCCEEDED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
+  INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT.copy {
+    state = InternalMeasurement.State.SUCCEEDED
+    result =
+      InternalMeasurementKt.result {
+        impression =
+          InternalMeasurementKt.ResultKt.impression { value = FIRST_PUBLISHER_IMPRESSION_VALUE }
+      }
+  }
+
+private val INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
+  INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT.copy {
+    state = InternalMeasurement.State.FAILED
+    failure = internalFailure {
+      reason = InternalMeasurement.Failure.Reason.REQUISITION_REFUSED
+      message = "Privacy budget exceeded."
+    }
+  }
+
 // CMMs incremental reach measurements
 private val UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT_SPEC = measurementSpec {
   measurementPublicKey = MEASUREMENT_CONSUMER_PUBLIC_KEY.toByteString()
@@ -1057,22 +1081,25 @@ class MetricsServiceTest {
       .thenReturn(
         INTERNAL_PENDING_INITIAL_INCREMENTAL_REACH_METRIC,
       )
-    // onBlocking { streamMetrics(any()) }
-    //   .thenReturn(
-    //     flowOf(
-    //       INTERNAL_PENDING_REACH_METRIC,
-    //       INTERNAL_PENDING_IMPRESSION_METRIC,
-    //       INTERNAL_PENDING_WATCH_DURATION_METRIC,
-    //       INTERNAL_PENDING_FREQUENCY_HISTOGRAM_METRIC,
-    //     )
-    //   )
-    // onBlocking { getMetric(any()) }
-    //   .thenReturn(
-    //     INTERNAL_SUCCEEDED_REACH_METRIC,
-    //     INTERNAL_SUCCEEDED_IMPRESSION_METRIC,
-    //     INTERNAL_SUCCEEDED_WATCH_DURATION_METRIC,
-    //     INTERNAL_SUCCEEDED_FREQUENCY_HISTOGRAM_METRIC,
-    //   )
+    onBlocking { streamMetrics(any()) }
+      .thenReturn(
+        flowOf(
+          INTERNAL_PENDING_INCREMENTAL_REACH_METRIC,
+          INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC
+        )
+      )
+    onBlocking { getMetric(any()) }
+      .thenReturn(
+        INTERNAL_PENDING_INCREMENTAL_REACH_METRIC,
+        INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC
+      )
+    onBlocking { batchGetMetrics(any()) }
+      .thenReturn(
+        flowOf(
+          INTERNAL_PENDING_INCREMENTAL_REACH_METRIC,
+          INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC
+        )
+      )
     onBlocking { getMetricByIdempotencyKey(any()) }
       .thenThrow(StatusRuntimeException(Status.NOT_FOUND))
   }
@@ -1098,13 +1125,24 @@ class MetricsServiceTest {
           INTERNAL_PENDING_UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT
         )
       )
+    onBlocking { batchSetMeasurementResults(any()) }
+      .thenReturn(
+        flowOf(
+          INTERNAL_SUCCEEDED_UNION_ALL_REACH_MEASUREMENT,
+          INTERNAL_SUCCEEDED_UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT,
+          INTERNAL_SUCCEEDED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT
+        )
+      )
+    onBlocking { batchSetMeasurementFailures(any()) }
+      .thenReturn(flowOf(INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT))
   }
 
   private val measurementsMock: MeasurementsCoroutineImplBase = mockService {
     onBlocking { getMeasurement(any()) }
       .thenReturn(
-        SUCCEEDED_UNION_ALL_REACH_MEASUREMENT,
-        SUCCEEDED_UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT,
+        PENDING_UNION_ALL_REACH_MEASUREMENT,
+        PENDING_UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT,
+        PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT
       )
 
     onBlocking { createMeasurement(any()) }
@@ -2558,6 +2596,33 @@ class MetricsServiceTest {
     assertThat(exception.status.code).isEqualTo(Status.Code.INVALID_ARGUMENT)
     assertThat(exception.status.description)
       .isEqualTo("At most $MAX_BATCH_SIZE requests can be supported in a batch.")
+  }
+
+  @Test
+  fun `listMetrics returns without a next page token when there is no previous page token`() {
+    val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+    val result =
+      withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+        runBlocking { service.listMetrics(request) }
+      }
+
+    val expected = listMetricsResponse {
+      metrics += PENDING_INCREMENTAL_REACH_METRIC
+      metrics += PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC
+    }
+
+    verifyProtoArgument(internalMetricsMock, MetricsCoroutineImplBase::streamMetrics)
+      .isEqualTo(
+        streamMetricsRequest {
+          limit = DEFAULT_PAGE_SIZE + 1
+          this.filter = filter {
+            cmmsMeasurementConsumerId = MEASUREMENT_CONSUMERS.keys.first().measurementConsumerId
+          }
+        }
+      )
+
+    assertThat(result).ignoringRepeatedFieldOrder().isEqualTo(expected)
   }
 }
 

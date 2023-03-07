@@ -986,6 +986,7 @@ class MetricsService(
         }
       } else null
 
+    // Only syncs measurements in the metrics that are not at terminal states.
     val toBeSyncedInternalMeasurements: List<InternalMeasurement> =
       results
         .subList(0, min(results.size, listMetricsPageToken.pageSize))
@@ -1281,7 +1282,7 @@ private fun ListMetricsPageToken.toStreamMetricsRequest(): StreamMetricsRequest 
   val source = this
   return streamMetricsRequest {
     // get 1 more than the actual page size for deciding whether to set page token
-    limit = pageSize + 1
+    limit = source.pageSize + 1
     filter =
       StreamMetricsRequestKt.filter {
         cmmsMeasurementConsumerId = source.externalMeasurementConsumerId
