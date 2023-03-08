@@ -1295,7 +1295,7 @@ private fun ListMetricsPageToken.toStreamMetricsRequest(): StreamMetricsRequest 
 private fun ListMetricsRequest.toListMetricsPageToken(): ListMetricsPageToken {
   val source = this
 
-  grpcRequire(source.pageSize >= 0) { "Page size cannot be less than 0" }
+  grpcRequire(source.pageSize >= 0) { "Page size cannot be less than 0." }
 
   val parentKey: MeasurementConsumerKey =
     grpcRequireNotNull(MeasurementConsumerKey.fromName(source.parent)) {
@@ -1309,7 +1309,7 @@ private fun ListMetricsRequest.toListMetricsPageToken(): ListMetricsPageToken {
   return if (pageToken.isNotBlank()) {
     ListMetricsPageToken.parseFrom(source.pageToken.base64UrlDecode()).copy {
       grpcRequire(this.externalMeasurementConsumerId == cmmsMeasurementConsumerId) {
-        "Arguments must be kept the same when using a page token"
+        "Arguments must be kept the same when using a page token."
       }
 
       if (isValidPageSize) {
