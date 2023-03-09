@@ -90,7 +90,6 @@ import org.wfanet.measurement.consent.client.measurementconsumer.verifyEncryptio
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequest.MeasurementIds
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequestKt.measurementIds
 import org.wfanet.measurement.consent.client.measurementconsumer.verifyResult
-import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequestKt.measurementIds
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementFailuresRequestKt.measurementFailure
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementResultsRequestKt.measurementResult
 import org.wfanet.measurement.internal.reporting.v2alpha.Measurement as InternalMeasurement

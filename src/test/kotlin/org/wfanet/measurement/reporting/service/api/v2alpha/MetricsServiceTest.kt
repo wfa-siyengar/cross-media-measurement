@@ -1403,8 +1403,6 @@ class MetricsServiceTest {
         .thenReturn(INTERNAL_PENDING_INITIAL_SINGLE_PUBLISHER_IMPRESSION_METRIC)
       whenever(internalReportingSetsMock.batchGetReportingSets(any()))
         .thenReturn(flowOf(INTERNAL_SINGLE_PUBLISHER_REPORTING_SET))
-      whenever(measurementsMock.createMeasurement(any()))
-        .thenReturn(PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT)
 
       val request = createMetricRequest {
         parent = MEASUREMENT_CONSUMERS.values.first().name
