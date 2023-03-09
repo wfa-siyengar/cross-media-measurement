@@ -66,6 +66,7 @@ import org.wfanet.measurement.api.v2alpha.MeasurementConsumerKey
 import org.wfanet.measurement.api.v2alpha.MeasurementConsumersGrpcKt
 import org.wfanet.measurement.api.v2alpha.MeasurementKey
 import org.wfanet.measurement.api.v2alpha.MeasurementKt
+import org.wfanet.measurement.api.v2alpha.MeasurementKt.failure
 import org.wfanet.measurement.api.v2alpha.MeasurementSpec
 import org.wfanet.measurement.api.v2alpha.MeasurementSpecKt
 import org.wfanet.measurement.api.v2alpha.MeasurementsGrpcKt
@@ -852,6 +853,15 @@ private val PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
         )
         .toName()
     state = Measurement.State.COMPUTING
+  }
+
+private val FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
+  PENDING_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT.copy {
+    state = Measurement.State.FAILED
+    failure = failure {
+      reason = Measurement.Failure.Reason.REQUISITION_REFUSED
+      message = INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT.failure.message
+    }
   }
 
 private val SUCCEEDED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
@@ -3123,6 +3133,121 @@ class MetricsServiceTest {
 
       val expectedExceptionDescription = "Unable to retrieve the measurement"
       assertThat(exception.message).contains(expectedExceptionDescription)
+    }
+  }
+
+  @Test
+  fun `listMetrics throws Exception when internal batchSetMeasurementResults throws Exception`() {
+    runBlocking {
+      whenever(measurementsMock.getMeasurement(any()))
+        .thenReturn(
+          SUCCEEDED_UNION_ALL_REACH_MEASUREMENT,
+          SUCCEEDED_UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT,
+        )
+      whenever(internalMeasurementsMock.batchSetMeasurementResults(any()))
+        .thenThrow(StatusRuntimeException(Status.UNKNOWN))
+
+      val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+      assertFailsWith(Exception::class) {
+        withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+          runBlocking { service.listMetrics(request) }
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `listMetrics throws Exception when not all measurement results are set successfully`() {
+    runBlocking {
+      whenever(measurementsMock.getMeasurement(any()))
+        .thenReturn(
+          SUCCEEDED_UNION_ALL_REACH_MEASUREMENT,
+          SUCCEEDED_UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT,
+        )
+      whenever(internalMeasurementsMock.batchSetMeasurementResults(any()))
+        .thenReturn(flowOf(INTERNAL_SUCCEEDED_UNION_ALL_REACH_MEASUREMENT))
+
+      val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+      val exception =
+        assertFailsWith<StatusRuntimeException> {
+          withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+            runBlocking { service.listMetrics(request) }
+          }
+        }
+      assertThat(exception.status.code).isEqualTo(Status.Code.NOT_FOUND)
+    }
+  }
+
+  @Test
+  fun `listMetrics throws Exception when internal batchSetMeasurementFailures throws Exception`() {
+    runBlocking {
+      whenever(measurementsMock.getMeasurement(any()))
+        .thenReturn(FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT)
+      whenever(internalMeasurementsMock.batchSetMeasurementFailures(any()))
+        .thenThrow(StatusRuntimeException(Status.UNKNOWN))
+
+      val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+      assertFailsWith(Exception::class) {
+        withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+          runBlocking { service.listMetrics(request) }
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `listMetrics throws Exception when not all measurement failures are set successfully`() {
+    runBlocking {
+      whenever(measurementsMock.getMeasurement(any()))
+        .thenReturn(FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT)
+      whenever(internalMeasurementsMock.batchSetMeasurementFailures(any())).thenReturn(flowOf())
+
+      val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+      val exception =
+        assertFailsWith<StatusRuntimeException> {
+          withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+            runBlocking { service.listMetrics(request) }
+          }
+        }
+      assertThat(exception.status.code).isEqualTo(Status.Code.NOT_FOUND)
+    }
+  }
+
+  @Test
+  fun `listMetrics throws Exception when internal batchGetMetrics throws Exception`() {
+    runBlocking {
+      whenever(internalMetricsMock.batchGetMetrics(any()))
+        .thenThrow(StatusRuntimeException(Status.UNKNOWN))
+
+      val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+      assertFailsWith(Exception::class) {
+        withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+          runBlocking { service.listMetrics(request) }
+        }
+      }
+    }
+  }
+
+  @Test
+  fun `listMetrics throws Exception when not all internal metrics are found`() {
+    runBlocking {
+      whenever(internalMetricsMock.batchGetMetrics(any()))
+        .thenReturn(flowOf(INTERNAL_PENDING_INCREMENTAL_REACH_METRIC))
+
+      val request = listMetricsRequest { parent = MEASUREMENT_CONSUMERS.values.first().name }
+
+      val exception =
+        assertFailsWith<StatusRuntimeException> {
+          withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+            runBlocking { service.listMetrics(request) }
+          }
+        }
+      assertThat(exception.status.code).isEqualTo(Status.Code.NOT_FOUND)
     }
   }
 }
