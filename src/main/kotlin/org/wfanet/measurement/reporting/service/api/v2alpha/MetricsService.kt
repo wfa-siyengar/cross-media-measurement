@@ -115,7 +115,6 @@ import org.wfanet.measurement.internal.reporting.v2alpha.batchSetCmmsMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.batchSetMeasurementFailuresRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchSetMeasurementResultsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.copy
-import org.wfanet.measurement.internal.reporting.v2alpha.getMetricByIdempotencyKeyRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.getReportingSetRequest as getInternalReportingSetRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.measurement as internalMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.metric as internalMetric
