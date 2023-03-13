@@ -87,9 +87,9 @@ import org.wfanet.measurement.consent.client.measurementconsumer.encryptRequisit
 import org.wfanet.measurement.consent.client.measurementconsumer.signMeasurementSpec
 import org.wfanet.measurement.consent.client.measurementconsumer.signRequisitionSpec
 import org.wfanet.measurement.consent.client.measurementconsumer.verifyEncryptionPublicKey
+import org.wfanet.measurement.consent.client.measurementconsumer.verifyResult
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequest.MeasurementIds
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequestKt.measurementIds
-import org.wfanet.measurement.consent.client.measurementconsumer.verifyResult
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementFailuresRequestKt.measurementFailure
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementResultsRequestKt.measurementResult
 import org.wfanet.measurement.internal.reporting.v2alpha.Measurement as InternalMeasurement
@@ -1002,7 +1002,10 @@ class MetricsService(
       metrics +=
         batchGetInternalMetrics(
             principal.resourceKey.measurementConsumerId,
-            results.subList(0, min(results.size, listMetricsPageToken.pageSize))
+            results.subList(0, min(results.size, listMetricsPageToken.pageSize)).map {
+              internalMetric ->
+              internalMetric.externalMetricId
+            }
           )
           .map(InternalMetric::toMetric)
 
@@ -1015,17 +1018,17 @@ class MetricsService(
   /** Gets a batch of [InternalMetric]. */
   private suspend fun batchGetInternalMetrics(
     cmmsMeasurementConsumerId: String,
-    internalMetrics: List<InternalMetric>,
+    externalMetricIds: List<Long>,
   ): List<InternalMetric> {
     val batchGetMetricsRequest = batchGetMetricsRequest {
       this.cmmsMeasurementConsumerId = cmmsMeasurementConsumerId
-      this.externalMetricIds += internalMetrics.map { it.externalMetricId }
+      this.externalMetricIds += externalMetricIds
     }
 
     val internalMetricsList = internalMetricsStub.batchGetMetrics(batchGetMetricsRequest).toList()
 
-    if (internalMetricsList.size < internalMetrics.size) {
-      val missingInternalMetricIds = internalMetrics.map { it.externalMetricId }.toMutableSet()
+    if (internalMetricsList.size < externalMetricIds.size) {
+      val missingInternalMetricIds = externalMetricIds.toMutableSet()
       val errorMessage = StringBuilder("The following metric names were not found:")
       internalMetricsList.forEach { missingInternalMetricIds.remove(it.externalMetricId) }
       missingInternalMetricIds.forEach {
