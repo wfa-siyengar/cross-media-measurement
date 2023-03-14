@@ -120,6 +120,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementFailuresRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementResultsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.GetMetricByIdempotencyKeyRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.GetMetricRequest as InternalGetMetricRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.GetReportingSetRequest as InternalGetReportingSetRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.Measurement as InternalMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.MeasurementKt as InternalMeasurementKt
@@ -149,6 +150,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.batchGetMetricsRequest 
 import org.wfanet.measurement.internal.reporting.v2alpha.batchGetReportingSetsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchSetCmmsMeasurementIdsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.copy
+import org.wfanet.measurement.internal.reporting.v2alpha.getMetricRequest as internalGetMetricRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.getReportingSetRequest as internalGetReportingSetRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.measurement as internalMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.metric as internalMetric
@@ -170,6 +172,7 @@ import org.wfanet.measurement.reporting.v2alpha.batchCreateMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.batchCreateMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.copy
 import org.wfanet.measurement.reporting.v2alpha.createMetricRequest
+import org.wfanet.measurement.reporting.v2alpha.getMetricRequest
 import org.wfanet.measurement.reporting.v2alpha.listMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.listMetricsResponse
 import org.wfanet.measurement.reporting.v2alpha.metric
@@ -3272,6 +3275,50 @@ class MetricsServiceTest {
 
     assertThat(exception).hasMessageThat().contains(AGGREGATOR_CERTIFICATE.name)
   }
+
+  @Test
+  fun `getMetric returns the metric with SUCCEEDED when the metric is already succeeded`() =
+    runBlocking {
+      whenever(internalMetricsMock.getMetric(any()))
+        .thenReturn(INTERNAL_SUCCEEDED_INCREMENTAL_REACH_METRIC)
+
+      val request = getMetricRequest { name = SUCCEEDED_INCREMENTAL_REACH_METRIC.name }
+
+      val result =
+        withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+          runBlocking { service.getMetric(request) }
+        }
+
+      // Verify proto argument of internal MetricsCoroutineImplBase::getMetric
+      val getInternalMetricCaptor: KArgumentCaptor<InternalGetMetricRequest> = argumentCaptor()
+      verifyBlocking(internalMetricsMock, times(1)) { getMetric(getInternalMetricCaptor.capture()) }
+      val capturedInternalGetMetricRequests = getInternalMetricCaptor.allValues
+      assertThat(capturedInternalGetMetricRequests)
+        .containsExactly(
+          internalGetMetricRequest {
+            cmmsMeasurementConsumerId =
+              INTERNAL_SUCCEEDED_INCREMENTAL_REACH_METRIC.cmmsMeasurementConsumerId
+            externalMetricId = INTERNAL_SUCCEEDED_INCREMENTAL_REACH_METRIC.externalMetricId
+          }
+        )
+
+      // Verify proto argument of internal MeasurementsCoroutineImplBase::batchSetMeasurementResults
+      val batchSetMeasurementResultsCaptor: KArgumentCaptor<BatchSetMeasurementResultsRequest> =
+        argumentCaptor()
+      verifyBlocking(internalMeasurementsMock, never()) {
+        batchSetMeasurementResults(batchSetMeasurementResultsCaptor.capture())
+      }
+
+      // Verify proto argument of internal
+      // MeasurementsCoroutineImplBase::batchSetMeasurementFailures
+      val batchSetMeasurementFailuresCaptor: KArgumentCaptor<BatchSetMeasurementFailuresRequest> =
+        argumentCaptor()
+      verifyBlocking(internalMeasurementsMock, never()) {
+        batchSetMeasurementFailures(batchSetMeasurementFailuresCaptor.capture())
+      }
+
+      assertThat(result).isEqualTo(SUCCEEDED_INCREMENTAL_REACH_METRIC)
+    }
 }
 
 private fun EventGroupKey.toInternal(): InternalReportingSet.Primitive.EventGroupKey {
