@@ -67,6 +67,7 @@ import org.wfanet.measurement.api.v2alpha.MeasurementConsumersGrpcKt
 import org.wfanet.measurement.api.v2alpha.MeasurementKey
 import org.wfanet.measurement.api.v2alpha.MeasurementKt
 import org.wfanet.measurement.api.v2alpha.MeasurementKt.failure
+import org.wfanet.measurement.api.v2alpha.MeasurementKt.resultPair
 import org.wfanet.measurement.api.v2alpha.MeasurementSpec
 import org.wfanet.measurement.api.v2alpha.MeasurementSpecKt
 import org.wfanet.measurement.api.v2alpha.MeasurementsGrpcKt
@@ -119,6 +120,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurement
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetCmmsMeasurementIdsRequestKt.measurementIds
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementFailuresRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementResultsRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.BatchSetMeasurementResultsRequestKt.measurementResult
 import org.wfanet.measurement.internal.reporting.v2alpha.GetMetricByIdempotencyKeyRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.GetMetricRequest as InternalGetMetricRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.GetReportingSetRequest as InternalGetReportingSetRequest
@@ -149,6 +151,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.batchCreateMetricsReque
 import org.wfanet.measurement.internal.reporting.v2alpha.batchGetMetricsRequest as internalBatchGetMetricsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchGetReportingSetsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.batchSetCmmsMeasurementIdsRequest
+import org.wfanet.measurement.internal.reporting.v2alpha.batchSetMeasurementResultsRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.copy
 import org.wfanet.measurement.internal.reporting.v2alpha.getMetricRequest as internalGetMetricRequest
 import org.wfanet.measurement.internal.reporting.v2alpha.getReportingSetRequest as internalGetReportingSetRequest
@@ -162,6 +165,7 @@ import org.wfanet.measurement.internal.reporting.v2alpha.timeInterval as interna
 import org.wfanet.measurement.reporting.service.api.InMemoryEncryptionKeyPairStore
 import org.wfanet.measurement.reporting.v2alpha.ListMetricsRequest
 import org.wfanet.measurement.reporting.v2alpha.Metric
+import org.wfanet.measurement.reporting.v2alpha.MetricResultKt.doubleResult
 import org.wfanet.measurement.reporting.v2alpha.MetricResultKt.integerResult
 import org.wfanet.measurement.reporting.v2alpha.MetricSpec
 import org.wfanet.measurement.reporting.v2alpha.MetricSpecKt.frequencyHistogramParams
@@ -225,6 +229,9 @@ private val WATCH_DURATION_VID_SAMPLING_START_LIST =
 private const val WATCH_DURATION_EPSILON = 0.001
 
 private const val DIFFERENTIAL_PRIVACY_DELTA = 1e-12
+
+private const val MAXIMUM_FREQUENCY_PER_USER = 10
+private const val MAXIMUM_WATCH_DURATION_PER_USER = 300
 
 private const val SECURE_RANDOM_OUTPUT_INT = 0
 private const val SECURE_RANDOM_OUTPUT_LONG = 0L
@@ -575,7 +582,7 @@ private val FREQUENCY_DISTRIBUTION = mapOf(1L to 1.0 / 6, 2L to 2.0 / 6, 3L to 3
 private val FIRST_PUBLISHER_IMPRESSION_VALUE = 100L
 private val IMPRESSION_VALUES = listOf(100L, 150L)
 private val TOTAL_IMPRESSION_VALUE = IMPRESSION_VALUES.sum()
-private val WATCH_DURATION_SECOND_LIST = listOf(100L, 200L)
+private val WATCH_DURATION_SECOND_LIST = listOf(100L, 200L, 300L)
 private val WATCH_DURATION_LIST = WATCH_DURATION_SECOND_LIST.map { duration { seconds = it } }
 private val TOTAL_WATCH_DURATION = duration { seconds = WATCH_DURATION_SECOND_LIST.sum() }
 
@@ -688,6 +695,40 @@ private val INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT =
       message = "Privacy budget exceeded."
     }
   }
+
+// Internal cross-publisher watch duration measurements
+private val INTERNAL_REQUESTING_UNION_ALL_WATCH_DURATION_MEASUREMENT = internalMeasurement {
+  cmmsMeasurementConsumerId = MEASUREMENT_CONSUMERS.keys.first().measurementConsumerId
+  timeInterval = INTERNAL_TIME_INTERVAL
+  primitiveReportingSetBases += primitiveReportingSetBasis {
+    externalReportingSetId = INTERNAL_UNION_ALL_REPORTING_SET.externalReportingSetId
+    filters += listOf(METRIC_FILTER, PRIMITIVE_REPORTING_SET_FILTER)
+  }
+}
+
+private val INTERNAL_PENDING_NOT_CREATED_UNION_ALL_WATCH_DURATION_MEASUREMENT =
+  INTERNAL_REQUESTING_UNION_ALL_WATCH_DURATION_MEASUREMENT.copy {
+    externalMeasurementId = 414L
+    cmmsCreateMeasurementRequestId = "UNION_ALL_WATCH_DURATION_MEASUREMENT"
+    state = InternalMeasurement.State.PENDING
+  }
+
+private val INTERNAL_PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT =
+  INTERNAL_PENDING_NOT_CREATED_UNION_ALL_WATCH_DURATION_MEASUREMENT.copy {
+    cmmsMeasurementId = externalIdToApiId(404L)
+  }
+
+private val INTERNAL_SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT =
+  INTERNAL_PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT.copy {
+    state = InternalMeasurement.State.SUCCEEDED
+    result =
+      InternalMeasurementKt.result {
+        watchDuration =
+          InternalMeasurementKt.ResultKt.watchDuration { value = TOTAL_WATCH_DURATION }
+      }
+  }
+
+// CMMs measurements
 
 // CMMs incremental reach measurements
 private val UNION_ALL_BUT_LAST_PUBLISHER_REACH_MEASUREMENT_SPEC = measurementSpec {
@@ -906,10 +947,87 @@ private val SUCCEEDED_CMMS_MEASUREMENTS =
       SUCCEEDED_SINGLE_PUBLISHER_IMPRESSION_MEASUREMENT,
   )
 
-// Metric Specs
+// CMMs cross publisher watch duration measurements
+private val UNION_ALL_WATCH_DURATION_MEASUREMENT_SPEC = measurementSpec {
+  measurementPublicKey = MEASUREMENT_CONSUMER_PUBLIC_KEY.toByteString()
 
-private const val MAXIMUM_FREQUENCY_PER_USER = 10
-private const val MAXIMUM_WATCH_DURATION_PER_USER = 300
+  nonceHashes.addAll(
+    listOf(
+      hashSha256(SECURE_RANDOM_OUTPUT_LONG),
+      hashSha256(SECURE_RANDOM_OUTPUT_LONG),
+      hashSha256(SECURE_RANDOM_OUTPUT_LONG)
+    )
+  )
+
+  duration =
+    MeasurementSpecKt.duration {
+      privacyParams = differentialPrivacyParams {
+        epsilon = WATCH_DURATION_EPSILON
+        delta = DIFFERENTIAL_PRIVACY_DELTA
+      }
+      privacyParams = differentialPrivacyParams {
+        epsilon = WATCH_DURATION_EPSILON
+        delta = DIFFERENTIAL_PRIVACY_DELTA
+      }
+      maximumWatchDurationPerUser = MAXIMUM_WATCH_DURATION_PER_USER
+    }
+  vidSamplingInterval =
+    MeasurementSpecKt.vidSamplingInterval {
+      start = WATCH_DURATION_VID_SAMPLING_START_LIST[SECURE_RANDOM_OUTPUT_INT]
+      width = WATCH_DURATION_VID_SAMPLING_WIDTH
+    }
+}
+
+private val REQUESTING_UNION_ALL_WATCH_DURATION_MEASUREMENT =
+  BASE_MEASUREMENT.copy {
+    dataProviders += DATA_PROVIDERS.keys.map { DATA_PROVIDER_ENTRIES.getValue(it) }
+
+    measurementSpec =
+      signMeasurementSpec(
+        UNION_ALL_WATCH_DURATION_MEASUREMENT_SPEC.copy {
+          nonceHashes += hashSha256(SECURE_RANDOM_OUTPUT_LONG)
+        },
+        MEASUREMENT_CONSUMER_SIGNING_KEY_HANDLE
+      )
+
+    measurementReferenceId =
+      INTERNAL_PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT.cmmsCreateMeasurementRequestId
+  }
+
+private val PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT =
+  REQUESTING_UNION_ALL_WATCH_DURATION_MEASUREMENT.copy {
+    name =
+      MeasurementKey(
+          MEASUREMENT_CONSUMERS.keys.first().measurementConsumerId,
+          INTERNAL_PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT.cmmsMeasurementId
+        )
+        .toName()
+    state = Measurement.State.COMPUTING
+  }
+
+private val SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT =
+  PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT.copy {
+    state = Measurement.State.SUCCEEDED
+
+    results +=
+      DATA_PROVIDERS.keys.zip(WATCH_DURATION_LIST).map { (dataProviderKey, watchDuration) ->
+        val dataProvider = DATA_PROVIDERS.getValue(dataProviderKey)
+        resultPair {
+          val result =
+            MeasurementKt.result {
+              this.watchDuration = MeasurementKt.ResultKt.watchDuration { value = watchDuration }
+            }
+          encryptedResult =
+            encryptResult(
+              signResult(result, DATA_PROVIDER_SIGNING_KEY),
+              MEASUREMENT_CONSUMER_PUBLIC_KEY
+            )
+          certificate = dataProvider.certificate
+        }
+      }
+  }
+
+// Metric Specs
 
 private val REACH_METRIC_SPEC: MetricSpec = metricSpec { reach = reachParams {} }
 private val FREQUENCY_HISTOGRAM_METRIC_SPEC: MetricSpec = metricSpec {
@@ -933,7 +1051,8 @@ private const val INCREMENTAL_REACH_METRIC_IDEMPOTENCY_KEY = "TEST_INCREMENTAL_R
 private const val SINGLE_PUBLISHER_IMPRESSION_METRIC_IDEMPOTENCY_KEY =
   "TEST_SINGLE_PUBLISHER_IMPRESSION_METRIC"
 // private const val IMPRESSION_METRIC_IDEMPOTENCY_KEY = "TEST_IMPRESSION_METRIC"
-// private const val WATCH_DURATION_METRIC_IDEMPOTENCY_KEY = "TEST_WATCH_DURATION_METRIC"
+private const val CROSS_PUBLISHER_WATCH_DURATION_METRIC_IDEMPOTENCY_KEY =
+  "TEST_CROSS_PUBLISHER_WATCH_DURATION_METRIC"
 // private const val FREQUENCY_HISTOGRAM_METRIC_IDEMPOTENCY_KEY = "TEST_FREQUENCY_HISTOGRAM_METRIC"
 
 // Typo causes invalid name
@@ -1038,7 +1157,64 @@ private val INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC =
     }
   }
 
+private val INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC =
+  INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC.copy { state = InternalMetric.State.FAILED }
+
+// Internal Cross Publisher Watch Duration Metrics
+private val INTERNAL_REQUESTING_CROSS_PUBLISHER_WATCH_DURATION_METRIC = internalMetric {
+  cmmsMeasurementConsumerId = MEASUREMENT_CONSUMERS.keys.first().measurementConsumerId
+  metricIdempotencyKey = CROSS_PUBLISHER_WATCH_DURATION_METRIC_IDEMPOTENCY_KEY
+  externalReportingSetId = INTERNAL_UNION_ALL_REPORTING_SET.externalReportingSetId
+  timeInterval = INTERNAL_TIME_INTERVAL
+  metricSpec = internalMetricSpec {
+    watchDuration =
+      InternalMetricSpecKt.watchDurationParams {
+        maximumWatchDurationPerUser = MAXIMUM_WATCH_DURATION_PER_USER
+      }
+  }
+  weightedMeasurements += weightedMeasurement {
+    weight = 1
+    measurement = INTERNAL_REQUESTING_UNION_ALL_WATCH_DURATION_MEASUREMENT
+  }
+  details = InternalMetricKt.details { filters += listOf(METRIC_FILTER) }
+}
+
+private val INTERNAL_PENDING_INITIAL_CROSS_PUBLISHER_WATCH_DURATION_METRIC =
+  INTERNAL_REQUESTING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.copy {
+    externalMetricId = 334L
+    createTime = Instant.now().toProtoTime()
+    weightedMeasurements.clear()
+    weightedMeasurements += weightedMeasurement {
+      weight = 1
+      measurement = INTERNAL_PENDING_NOT_CREATED_UNION_ALL_WATCH_DURATION_MEASUREMENT
+    }
+    state = InternalMetric.State.RUNNING
+  }
+
+private val INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC =
+  INTERNAL_PENDING_INITIAL_CROSS_PUBLISHER_WATCH_DURATION_METRIC.copy {
+    weightedMeasurements.clear()
+    weightedMeasurements += weightedMeasurement {
+      weight = 1
+      measurement = INTERNAL_PENDING_UNION_ALL_WATCH_DURATION_MEASUREMENT
+    }
+  }
+
+private val INTERNAL_SUCCEEDED_CROSS_PUBLISHER_WATCH_DURATION_METRIC =
+  INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.copy {
+    state = InternalMetric.State.SUCCEEDED
+    details =
+      InternalMetricKt.details {
+        filters += this@copy.details.filtersList
+        result = internalMetricResult {
+          watchDuration =
+            InternalMetricResultKt.doubleResult { value = TOTAL_WATCH_DURATION.seconds.toDouble() }
+        }
+      }
+  }
+
 // Public Metrics
+
 // Incremental reach metrics
 private val REQUESTING_INCREMENTAL_REACH_METRIC = metric {
   reportingSet = INTERNAL_INCREMENTAL_REPORTING_SET.resourceName
@@ -1090,6 +1266,41 @@ private val PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC =
         .toName()
     state = Metric.State.RUNNING
     createTime = INTERNAL_PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC.createTime
+  }
+
+private val FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC =
+  PENDING_SINGLE_PUBLISHER_IMPRESSION_METRIC.copy { state = Metric.State.FAILED }
+
+// Cross publisher watch duration metrics
+private val REQUESTING_CROSS_PUBLISHER_WATCH_DURATION_METRIC = metric {
+  reportingSet = INTERNAL_UNION_ALL_REPORTING_SET.resourceName
+  timeInterval = TIME_INTERVAL
+  metricSpec = WATCH_DURATION_METRIC_SPEC
+  filters += INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.details.filtersList
+}
+
+private val PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC =
+  REQUESTING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.copy {
+    name =
+      MetricKey(
+          MEASUREMENT_CONSUMERS.keys.first().measurementConsumerId,
+          externalIdToApiId(INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.externalMetricId)
+        )
+        .toName()
+    state = Metric.State.RUNNING
+    createTime = INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.createTime
+  }
+
+private val SUCCEEDED_CROSS_PUBLISHER_WATCH_DURATION_METRIC =
+  PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.copy {
+    state = Metric.State.SUCCEEDED
+    result = metricResult {
+      watchDuration = doubleResult {
+        value =
+          INTERNAL_SUCCEEDED_CROSS_PUBLISHER_WATCH_DURATION_METRIC.details.result.watchDuration
+            .value
+      }
+    }
   }
 
 @RunWith(JUnit4::class)
@@ -3318,6 +3529,172 @@ class MetricsServiceTest {
       }
 
       assertThat(result).isEqualTo(SUCCEEDED_INCREMENTAL_REACH_METRIC)
+    }
+
+  @Test
+  fun `getMetric returns the metric with FAILED when the metric is already failed`() = runBlocking {
+    whenever(internalMetricsMock.getMetric(any()))
+      .thenReturn(INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC)
+
+    val request = getMetricRequest { name = FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC.name }
+
+    val result =
+      withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+        runBlocking { service.getMetric(request) }
+      }
+
+    // Verify proto argument of internal MetricsCoroutineImplBase::getMetric
+    val getInternalMetricCaptor: KArgumentCaptor<InternalGetMetricRequest> = argumentCaptor()
+    verifyBlocking(internalMetricsMock, times(1)) { getMetric(getInternalMetricCaptor.capture()) }
+    val capturedInternalGetMetricRequests = getInternalMetricCaptor.allValues
+    assertThat(capturedInternalGetMetricRequests)
+      .containsExactly(
+        internalGetMetricRequest {
+          cmmsMeasurementConsumerId =
+            INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC.cmmsMeasurementConsumerId
+          externalMetricId = INTERNAL_FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC.externalMetricId
+        }
+      )
+
+    // Verify proto argument of internal MeasurementsCoroutineImplBase::batchSetMeasurementResults
+    val batchSetMeasurementResultsCaptor: KArgumentCaptor<BatchSetMeasurementResultsRequest> =
+      argumentCaptor()
+    verifyBlocking(internalMeasurementsMock, never()) {
+      batchSetMeasurementResults(batchSetMeasurementResultsCaptor.capture())
+    }
+
+    // Verify proto argument of internal
+    // MeasurementsCoroutineImplBase::batchSetMeasurementFailures
+    val batchSetMeasurementFailuresCaptor: KArgumentCaptor<BatchSetMeasurementFailuresRequest> =
+      argumentCaptor()
+    verifyBlocking(internalMeasurementsMock, never()) {
+      batchSetMeasurementFailures(batchSetMeasurementFailuresCaptor.capture())
+    }
+
+    assertThat(result).isEqualTo(FAILED_SINGLE_PUBLISHER_IMPRESSION_METRIC)
+  }
+
+  @Test
+  fun `getMetric returns the metric with RUNNING when measurements are pending`() = runBlocking {
+    whenever(internalMetricsMock.getMetric(any()))
+      .thenReturn(
+        INTERNAL_PENDING_INCREMENTAL_REACH_METRIC,
+        INTERNAL_PENDING_INCREMENTAL_REACH_METRIC
+      )
+
+    val request = getMetricRequest { name = PENDING_INCREMENTAL_REACH_METRIC.name }
+
+    val result =
+      withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+        runBlocking { service.getMetric(request) }
+      }
+
+    // Verify proto argument of internal MetricsCoroutineImplBase::getMetric
+    val getInternalMetricCaptor: KArgumentCaptor<InternalGetMetricRequest> = argumentCaptor()
+    verifyBlocking(internalMetricsMock, times(2)) { getMetric(getInternalMetricCaptor.capture()) }
+    val capturedInternalGetMetricRequests = getInternalMetricCaptor.allValues
+    assertThat(capturedInternalGetMetricRequests)
+      .containsExactly(
+        internalGetMetricRequest {
+          cmmsMeasurementConsumerId =
+            INTERNAL_PENDING_INCREMENTAL_REACH_METRIC.cmmsMeasurementConsumerId
+          externalMetricId = INTERNAL_PENDING_INCREMENTAL_REACH_METRIC.externalMetricId
+        },
+        internalGetMetricRequest {
+          cmmsMeasurementConsumerId =
+            INTERNAL_PENDING_INCREMENTAL_REACH_METRIC.cmmsMeasurementConsumerId
+          externalMetricId = INTERNAL_PENDING_INCREMENTAL_REACH_METRIC.externalMetricId
+        }
+      )
+
+    // Verify proto argument of internal MeasurementsCoroutineImplBase::batchSetMeasurementResults
+    val batchSetMeasurementResultsCaptor: KArgumentCaptor<BatchSetMeasurementResultsRequest> =
+      argumentCaptor()
+    verifyBlocking(internalMeasurementsMock, never()) {
+      batchSetMeasurementResults(batchSetMeasurementResultsCaptor.capture())
+    }
+
+    // Verify proto argument of internal
+    // MeasurementsCoroutineImplBase::batchSetMeasurementFailures
+    val batchSetMeasurementFailuresCaptor: KArgumentCaptor<BatchSetMeasurementFailuresRequest> =
+      argumentCaptor()
+    verifyBlocking(internalMeasurementsMock, never()) {
+      batchSetMeasurementFailures(batchSetMeasurementFailuresCaptor.capture())
+    }
+
+    assertThat(result).isEqualTo(PENDING_INCREMENTAL_REACH_METRIC)
+  }
+
+  @Test
+  fun `getMetric returns the metric with SUCCEEDED when measurements are SUCCEEDED`() =
+    runBlocking {
+      whenever(internalMetricsMock.getMetric(any()))
+        .thenReturn(
+          INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC,
+          INTERNAL_SUCCEEDED_CROSS_PUBLISHER_WATCH_DURATION_METRIC
+        )
+      whenever(measurementsMock.getMeasurement(any()))
+        .thenReturn(
+          SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT,
+        )
+      whenever(internalMeasurementsMock.batchSetMeasurementResults(any()))
+        .thenReturn(flowOf(INTERNAL_SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT))
+
+      val request = getMetricRequest { name = PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.name }
+
+      val result =
+        withMeasurementConsumerPrincipal(MEASUREMENT_CONSUMERS.values.first().name, CONFIG) {
+          runBlocking { service.getMetric(request) }
+        }
+
+      // Verify proto argument of internal MetricsCoroutineImplBase::getMetric
+      val getInternalMetricCaptor: KArgumentCaptor<InternalGetMetricRequest> = argumentCaptor()
+      verifyBlocking(internalMetricsMock, times(2)) { getMetric(getInternalMetricCaptor.capture()) }
+      val capturedInternalGetMetricRequests = getInternalMetricCaptor.allValues
+      assertThat(capturedInternalGetMetricRequests)
+        .containsExactly(
+          internalGetMetricRequest {
+            cmmsMeasurementConsumerId =
+              INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.cmmsMeasurementConsumerId
+            externalMetricId =
+              INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.externalMetricId
+          },
+          internalGetMetricRequest {
+            cmmsMeasurementConsumerId =
+              INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.cmmsMeasurementConsumerId
+            externalMetricId =
+              INTERNAL_PENDING_CROSS_PUBLISHER_WATCH_DURATION_METRIC.externalMetricId
+          }
+        )
+
+      // Verify proto argument of internal MeasurementsCoroutineImplBase::batchSetMeasurementResults
+      val batchSetMeasurementResultsCaptor: KArgumentCaptor<BatchSetMeasurementResultsRequest> =
+        argumentCaptor()
+      verifyBlocking(internalMeasurementsMock, times(1)) {
+        batchSetMeasurementResults(batchSetMeasurementResultsCaptor.capture())
+      }
+      assertThat(batchSetMeasurementResultsCaptor.allValues)
+        .containsExactly(
+          batchSetMeasurementResultsRequest {
+            cmmsMeasurementConsumerId =
+              INTERNAL_SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT.cmmsMeasurementConsumerId
+            measurementResults += measurementResult {
+              externalMeasurementId =
+                INTERNAL_SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT.externalMeasurementId
+              this.result = INTERNAL_SUCCEEDED_UNION_ALL_WATCH_DURATION_MEASUREMENT.result
+            }
+          }
+        )
+
+      // Verify proto argument of internal
+      // MeasurementsCoroutineImplBase::batchSetMeasurementFailures
+      val batchSetMeasurementFailuresCaptor: KArgumentCaptor<BatchSetMeasurementFailuresRequest> =
+        argumentCaptor()
+      verifyBlocking(internalMeasurementsMock, never()) {
+        batchSetMeasurementFailures(batchSetMeasurementFailuresCaptor.capture())
+      }
+
+      assertThat(result).isEqualTo(SUCCEEDED_CROSS_PUBLISHER_WATCH_DURATION_METRIC)
     }
 }
 
