@@ -103,9 +103,17 @@ message SetMeasurementResultRequest {
 message CancelMeasurementRequest {
   fixed64 external_measurement_consumer_id = 1;
   fixed64 external_measurement_id = 2;
+
+  // Optional checksum computed on-demand from update_time. This may be sent to
+  // ensure the client has an up-to-date value before proceeding.
+  string etag = 3;
 }
 
 message DeleteMeasurementRequest {
   fixed64 external_measurement_consumer_id = 1;
   fixed64 external_measurement_id = 2;
+
+  // Optional checksum computed on-demand from update_time. This may be sent to
+  // ensure the client has an up-to-date value before proceeding.
+  string etag = 3;
 }
