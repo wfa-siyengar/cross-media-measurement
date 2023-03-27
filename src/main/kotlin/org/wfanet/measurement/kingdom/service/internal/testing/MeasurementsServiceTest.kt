@@ -57,6 +57,7 @@ import org.wfanet.measurement.internal.kingdom.StreamRequisitionsRequestKt
 import org.wfanet.measurement.internal.kingdom.cancelMeasurementRequest
 import org.wfanet.measurement.internal.kingdom.computationParticipant
 import org.wfanet.measurement.internal.kingdom.copy
+import org.wfanet.measurement.internal.kingdom.deleteMeasurementRequest
 import org.wfanet.measurement.internal.kingdom.duchyProtocolConfig
 import org.wfanet.measurement.internal.kingdom.getMeasurementByComputationIdRequest
 import org.wfanet.measurement.internal.kingdom.getMeasurementRequest
@@ -1303,6 +1304,58 @@ abstract class MeasurementsServiceTest<T : MeasurementsCoroutineImplBase> {
         .toList()
 
     assertThat(measurements).containsExactly(succeededMeasurement)
+  }
+
+  @Test
+  fun `deleteMeasurement succeeds for existing Measurement`() = runBlocking {
+    val measurementConsumer =
+      population.createMeasurementConsumer(measurementConsumersService, accountsService)
+    val dataProvider = population.createDataProvider(dataProvidersService)
+    val createdMeasurement =
+      measurementsService.createMeasurement(
+        MEASUREMENT.copy {
+          externalMeasurementConsumerId = measurementConsumer.externalMeasurementConsumerId
+          externalMeasurementConsumerCertificateId =
+            measurementConsumer.certificate.externalCertificateId
+          dataProviders[dataProvider.externalDataProviderId] = dataProvider.toDataProviderValue()
+        }
+      )
+
+    measurementsService.deleteMeasurement(
+      deleteMeasurementRequest {
+        externalMeasurementId = createdMeasurement.externalMeasurementId
+        externalMeasurementConsumerId = createdMeasurement.externalMeasurementConsumerId
+      }
+    )
+
+    val exception =
+      assertFailsWith<StatusRuntimeException> {
+        measurementsService.getMeasurement(
+          getMeasurementRequest {
+            externalMeasurementConsumerId = createdMeasurement.externalMeasurementConsumerId
+            externalMeasurementId = createdMeasurement.externalMeasurementId
+          }
+        )
+      }
+
+    assertThat(exception.status.code).isEqualTo(Status.Code.NOT_FOUND)
+    assertThat(exception).hasMessageThat().contains("Measurement not found")
+  }
+
+  @Test
+  fun `deleteMeasurement throws NOT_FOUND when Measurement does not exist`(): Unit = runBlocking {
+    val exception =
+      assertFailsWith<StatusRuntimeException> {
+        measurementsService.deleteMeasurement(
+          deleteMeasurementRequest {
+            externalMeasurementId = 123L
+            externalMeasurementConsumerId = 123L
+          }
+        )
+      }
+
+    assertThat(exception.status.code).isEqualTo(Status.Code.NOT_FOUND)
+    assertThat(exception).hasMessageThat().contains("Measurement not found")
   }
 
   companion object {

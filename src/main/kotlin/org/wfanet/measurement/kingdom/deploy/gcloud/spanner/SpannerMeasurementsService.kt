@@ -14,6 +14,7 @@
 
 package org.wfanet.measurement.kingdom.deploy.gcloud.spanner
 
+import com.google.protobuf.Empty
 import io.grpc.Status
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -23,6 +24,7 @@ import org.wfanet.measurement.common.identity.ExternalId
 import org.wfanet.measurement.common.identity.IdGenerator
 import org.wfanet.measurement.gcloud.spanner.AsyncDatabaseClient
 import org.wfanet.measurement.internal.kingdom.CancelMeasurementRequest
+import org.wfanet.measurement.internal.kingdom.DeleteMeasurementRequest
 import org.wfanet.measurement.internal.kingdom.GetMeasurementByComputationIdRequest
 import org.wfanet.measurement.internal.kingdom.GetMeasurementRequest
 import org.wfanet.measurement.internal.kingdom.Measurement
@@ -43,6 +45,7 @@ import org.wfanet.measurement.kingdom.deploy.gcloud.spanner.queries.StreamMeasur
 import org.wfanet.measurement.kingdom.deploy.gcloud.spanner.readers.MeasurementReader
 import org.wfanet.measurement.kingdom.deploy.gcloud.spanner.writers.CancelMeasurement
 import org.wfanet.measurement.kingdom.deploy.gcloud.spanner.writers.CreateMeasurement
+import org.wfanet.measurement.kingdom.deploy.gcloud.spanner.writers.DeleteMeasurement
 import org.wfanet.measurement.kingdom.deploy.gcloud.spanner.writers.SetMeasurementResult
 
 class SpannerMeasurementsService(
@@ -156,6 +159,23 @@ class SpannerMeasurementsService(
       e.throwStatusRuntimeException(Status.NOT_FOUND) { "Measurement not found." }
     } catch (e: MeasurementStateIllegalException) {
       e.throwStatusRuntimeException(Status.FAILED_PRECONDITION) { "Measurement state illegal." }
+    } catch (e: KingdomInternalException) {
+      e.throwStatusRuntimeException(Status.INTERNAL) { "Unexpected internal error." }
+    }
+  }
+
+  override suspend fun deleteMeasurement(request: DeleteMeasurementRequest): Empty {
+    with(request) {
+      grpcRequire(externalMeasurementConsumerId != 0L) {
+        "external_measurement_consumer_id not specified"
+      }
+      grpcRequire(externalMeasurementId != 0L) { "external_measurement_id not specified" }
+    }
+
+    try {
+      return DeleteMeasurement(request).execute(client, idGenerator)
+    } catch (e: MeasurementNotFoundException) {
+      e.throwStatusRuntimeException(Status.NOT_FOUND) { "Measurement not found." }
     } catch (e: KingdomInternalException) {
       e.throwStatusRuntimeException(Status.INTERNAL) { "Unexpected internal error." }
     }
