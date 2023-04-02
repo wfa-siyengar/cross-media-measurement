@@ -12,21 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This is step 3 as per the document
-# https://github.com/world-federation-of-advertisers/cross-media-measurement/blob/main/docs/gke/kingdom-deployment.md
-data "google_kms_key_ring" "my_key_ring" {
-  name = local.kms.ring_name
-  location = local.zone
+variable "project" {
+  type = string
+  default = "halo-cmm-dev"
+  description = "Project name used"
 }
 
-resource "google_kms_crypto_key" "default" {
-  name = "k8s-secret"
-  key_ring = data.google_kms_key_ring.my_key_ring.id
+variable env {
+  type = string
+  default = "dev"
+  description = "Represents the environment used."
 }
 
-data "google_iam_policy" "default" {
-  binding {
-    members = [ var.service_account ]
-    role = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
-  }
+variable "service_account" {
+  type = string
+  default = "serviceAccount:service-1049178966878@compute-system.iam.gserviceaccount.com"
+  description = "The Service account to be used to create these resources"
 }
